@@ -7,6 +7,7 @@
   --paper-ink: #2a2118;
   --lamp: #f2b544;
   --clay: #c86b4a;
+  --mining-ink: #140e0a;
   --moss: #8eae78;
   --line: rgba(244, 231, 208, 0.16);
   --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Songti SC", "Noto Serif SC", Georgia, serif;
@@ -82,9 +83,8 @@ a { color: var(--lamp); }
 
 .kicker {
   margin: 0 0 6px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  font-size: 12px;
+  letter-spacing: normal;
+  font-size: 13px;
 }
 
 h1, h2, .clock, .prompt {
@@ -183,7 +183,7 @@ main {
   padding: 12px;
 }
 .shop button strong, .shop button small { display: block; }
-.shop button small { color: #6d5c49; font-size: 12px; margin-top: 4px; }
+.shop button small { color: #6d5c49; font-size: 13px; margin-top: 4px; }
 .run-row { display: flex; gap: 8px; margin-top: 12px; }
 .run-row button { flex: 1; padding: 12px; }
 .invite { margin-top: 12px; }
@@ -197,7 +197,7 @@ main {
 }
 .top { padding-top: 16px; }
 h1 { font-size: clamp(32px, 4vw, 44px); margin-bottom: 0; }
-.lede { font-size: 15px; margin-top: 8px; }
+.lede { font-size: 16px; margin-top: 8px; }
 #room { aspect-ratio: 2 / 1; max-height: none; width: 100%; background: #3a281e; image-rendering: pixelated; image-rendering: crisp-edges; }
 .wheel-line { display: none; }
 .choices {
@@ -235,7 +235,7 @@ h1 { font-size: clamp(32px, 4vw, 44px); margin-bottom: 0; }
 }
 .shop button:disabled { cursor: default; opacity: 0.62; }
 #power { background: #f2b544; font-weight: 700; }
-#power.mining { background: #c86b4a; color: #fff8ea; }
+#power.mining { background: var(--clay); color: var(--mining-ink); }
 main { align-items: start; }
 .chronicle { margin-top: 14px; }
 body { background: #120c16; }
@@ -292,7 +292,7 @@ body { background: #120c16; }
 }
 
 .actions button strong, .actions button small { display: block; }
-.actions button small { color: #6d5c49; font-size: 12px; line-height: 1.35; margin-top: 4px; }
+.actions button small { color: #6d5c49; font-size: 13px; line-height: 1.35; margin-top: 4px; }
 .stakes span { display: block; }
 .stakes .bad { color: #9a3d28; }
 
@@ -347,7 +347,7 @@ body { background: #120c16; }
 
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .chip {
-  font-size: 12px;
+  font-size: 13px;
   border-radius: 99px;
   padding: 2px 8px;
   background: #efe2cb;
@@ -381,37 +381,14 @@ footer p { margin: 0 0 8px; }
   padding: 8px 0 12px;
 }
 
-@media (max-width: 720px) {
-  main { grid-template-columns: 1fr; }
-  .boards { grid-column: 1; grid-row: auto; position: static; }
-  .top { flex-direction: column; }
-  .top-tools { align-items: flex-start; flex-direction: row; }
-  .clock { font-size: 24px; }
-  .choices {
-    grid-template-columns: auto 1fr;
-    grid-template-areas:
-      "ore label"
-      "status status"
-      "power power"
-      "prov prov"
-      "sands sands"
-      "meters meters"
-      "tabs tabs"
-      "shop shop"
-      "invite invite"
-      "note note";
-  }
-  .home-shop { grid-template-columns: 1fr; }
-}
-
 @media (prefers-reduced-motion: reduce) {
   * { scroll-behavior: auto; }
 }
 
 .sands { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 10px; }
 .sand { padding: 8px; background: #241428; border: 3px solid #3a2418; }
-.sand span { display: block; color: var(--muted); font-size: 12px; }
-.sand strong { font-family: var(--serif); font-size: 22px; }
+.sand span { display: block; color: var(--muted); font-size: 13px; }
+.sand strong { font-family: var(--serif); font-size: 20px; }
 .sand-iron strong { color: #c5ccd4; }
 .sand-silver strong { color: #f4f4f6; }
 .sand-gold strong { color: #f2b544; }
@@ -447,3 +424,34 @@ footer p { margin: 0 0 8px; }
 }
 .board li.me { color: var(--lamp); }
 .board li.empty { color: var(--muted); border-top: 0; }
+
+/* Keep the existing mobile rules after the desktop component rules. */
+@media (max-width: 720px) {
+  main { grid-template-columns: 1fr; }
+  .boards { grid-column: 1; grid-row: auto; position: static; }
+  .top { flex-direction: column; }
+  .top-tools { align-items: flex-start; flex-direction: row; }
+  .clock { font-size: 24px; }
+  .choices {
+    grid-template-columns: auto 1fr;
+    grid-template-areas:
+      "ore label"
+      "status status"
+      "power power"
+      "prov prov"
+      "sands sands"
+      "meters meters"
+      "tabs tabs"
+      "shop shop"
+      "invite invite"
+      "note note";
+  }
+  .home-shop { grid-template-columns: 1fr; }
+}
+
+button { min-height: 44px; }
+.invite label { display: block; font-weight: 700; }
+.invite input { font: inherit; font-size: 16px; }
+.board li span { min-width: 0; overflow-wrap: anywhere; }
+.board li strong { flex-shrink: 0; }
+.sands, .meters { grid-template-columns: repeat(3, minmax(0, 1fr)); }

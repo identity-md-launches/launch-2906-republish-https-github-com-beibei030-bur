@@ -17,9 +17,11 @@ import {
   upgradeCost,
   upgradeDecor,
 } from "./economy.js";
+import { apiJson } from "./api.js";
 
 const KEY = "burrowkeep-cpu-v1";
 const $ = (id) => document.getElementById(id);
+const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
 
 const COPY = {
   zh: {
@@ -83,6 +85,9 @@ const COPY = {
     decorWord: "装饰度",
     decorMax: "装饰已满级",
     decorUp: (now, next, cost, sand) => `装饰度 ${now} → ${next} · ${cost} ${sand}`,
+    loading: "正在连接",
+    offline: "服务暂时不可用，正在自动重试",
+    copyManual: "请复制上方已选中的链接",
   },
   en: {
     lang: "中文",
@@ -145,6 +150,9 @@ const COPY = {
     decorWord: "Decor",
     decorMax: "Decor maxed",
     decorUp: (now, next, cost, sand) => `Decor ${now} → ${next} · ${cost} ${sand}`,
+    loading: "Connecting",
+    offline: "Service unavailable. Retrying automatically.",
+    copyManual: "Copy the selected link above",
   },
 };
 
@@ -187,6 +195,11 @@ let angle = 0;
 let pops = [];
 let board = { wealth: [], decor: [] };
 let postedKey = "";
+let boardStatus = "loading";
+let inviteStatus = "loading";
+let syncingBoard = false;
+let pulsing = false;
+let sayingHello = false;
 
 function text() { return COPY[lang]; }
 
@@ -331,14 +344,20 @@ function renderSands() {
 function renderShop() {
   const t = text();
   const tabs = $("tabs");
-  tabs.replaceChildren();
+  if (!tabs.children.length) {
+    for (const id of ["home", "raise"]) {
+      const tab = document.createElement("button");
+      tab.type = "button";
+      tab.dataset.tab = id;
+      tab.addEventListener("click", () => { shopTab = id; render(); });
+      tabs.appendChild(tab);
+    }
+  }
   for (const [id, label] of [["home", t.tabsHome], ["raise", t.tabsRaise]]) {
-    const tab = document.createElement("button");
-    tab.type = "button";
+    const tab = tabs.querySelector(`button[data-tab="${id}"]`);
     tab.textContent = label;
     tab.className = shopTab === id ? "on" : "";
-    tab.addEventListener("click", () => { shopTab = id; render(); });
-    tabs.appendChild(tab);
+    tab.setAttribute("aria-pressed", String(shopTab === id));
   }
   const root = $("shop");
   root.replaceChildren();
@@ -498,8 +517,9 @@ function renderBoards() {
   const t = text();
   $("wealth-title").textContent = t.wealthTitle;
   $("decor-title").textContent = t.decorTitle;
-  $("wealth-mine").textContent = t.wealthMine(state.gold || 0);
-  $("decor-mine").textContent = t.decorMine(decorTotal());
+  const status = boardStatus === "ready" ? "" : ` · ${t[boardStatus]}`;
+  $("wealth-mine").textContent = t.wealthMine(state.gold || 0) + (board.wealth.length ? status : "");
+  $("decor-mine").textContent = t.decorMine(decorTotal()) + (board.decor.length ? status : "");
   fillBoard($("wealth-list"), board.wealth || []);
   fillBoard($("decor-list"), board.decor || []);
 }
@@ -510,7 +530,7 @@ function fillBoard(root, rows) {
   if (!rows.length) {
     const empty = document.createElement("li");
     empty.className = "empty";
-    empty.textContent = t.boardEmpty;
+    empty.textContent = boardStatus === "ready" ? t.boardEmpty : t[boardStatus];
     root.appendChild(empty);
     return;
   }
@@ -527,50 +547,89 @@ function fillBoard(root, rows) {
 }
 
 async function syncBoard() {
-  const gold = state.gold || 0;
-  const decor = decorTotal();
-  const key = `${state.minerId}:${gold}:${decor}`;
-  if (key !== postedKey) {
-    postedKey = key;
-    const ok = await fetch("/api/board", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ minerId: state.minerId, gold, decor }),
-    }).then((response) => response.ok).catch(() => false);
-    if (!ok) postedKey = "";
+  // Registration must precede a score: /api/board also creates a miner record.
+  // Posting before /api/hello would permanently lose a first-visit referral.
+  if (!state.welcomed || syncingBoard) return;
+  syncingBoard = true;
+  try {
+    const gold = state.gold || 0;
+    const decor = decorTotal();
+    const key = `${state.minerId}:${gold}:${decor}`;
+    if (key !== postedKey) {
+      const result = await apiJson("/api/board", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ minerId: state.minerId, gold, decor }),
+      });
+      if (result?.ok === true) postedKey = key;
+    }
+    const result = await apiJson("/api/board");
+    const validRows = (rows) => Array.isArray(rows) && rows.every((row) =>
+      typeof row?.id === "string" && /^[a-z0-9]{8,32}$/i.test(row.id)
+      && Number.isFinite(row.score) && row.score >= 0);
+    if (result && validRows(result.wealth) && validRows(result.decor)) {
+      board = result;
+      boardStatus = "ready";
+    } else {
+      boardStatus = "offline";
+    }
+    renderBoards();
+  } finally {
+    syncingBoard = false;
   }
-  const response = await fetch("/api/board").catch(() => null);
-  if (!response || !response.ok) return;
-  board = await response.json();
-  renderBoards();
 }
 
 function renderInvite() {
   const t = text();
   const root = $("invite");
   const link = `${location.origin}${location.pathname}?ref=${state.minerId}`;
-  root.replaceChildren();
-  const title = document.createElement("strong");
+  // Keep the field and copy button stable during five-second API updates.
+  let title = root.querySelector("label");
+  if (!title) {
+    title = document.createElement("label");
+    title.htmlFor = "invite-link";
+    const status = document.createElement("p");
+    status.className = "note invite-binding";
+    const pay = document.createElement("p");
+    pay.className = "note invite-pay";
+    const connection = document.createElement("p");
+    connection.className = "note invite-connection";
+    connection.setAttribute("role", "status");
+    const field = document.createElement("input");
+    field.id = "invite-link";
+    field.readOnly = true;
+    field.type = "url";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(field.value);
+        button.textContent = text().copied;
+      } catch {
+        field.focus();
+        field.select();
+        button.textContent = text().copyManual;
+      }
+    });
+    root.append(title, status, pay, connection, field, button);
+  }
   title.textContent = t.gameInvite;
-  const status = document.createElement("p");
-  status.className = "note";
+  const status = root.querySelector(".invite-binding");
   status.textContent = state.welcomed
     ? (state.refId ? t.bound(state.refId) : t.unbound)
     : t.inviteHint;
-  const pay = document.createElement("p");
-  pay.className = "note";
+  const pay = root.querySelector(".invite-pay");
   pay.textContent = t.friendPay((pendingMilli / 1000).toFixed(2), state.friendOre || 0);
-  const field = document.createElement("input");
-  field.readOnly = true;
+  const connection = root.querySelector(".invite-connection");
+  connection.textContent = inviteStatus === "ready" ? "" : t[inviteStatus];
+  connection.toggleAttribute("hidden", inviteStatus === "ready");
+  const field = root.querySelector("input");
   field.value = link;
-  const button = document.createElement("button");
-  button.type = "button";
-  button.textContent = t.copyGame;
-  button.addEventListener("click", async () => {
-    await navigator.clipboard.writeText(link).catch(() => field.select());
-    button.textContent = t.copied;
-  });
-  root.append(title, status, pay, field, button);
+  const button = root.querySelector("button");
+  if (button.dataset.lang !== lang) {
+    button.textContent = t.copyGame;
+    button.dataset.lang = lang;
+  }
 }
 
 function paintLive() {
@@ -582,6 +641,7 @@ function paintLive() {
   const need = hashesPerOre(state.hamster, state.satiety <= 0, ease());
   $("provisional").textContent = t.nextOre(Math.max(0, need - bank));
   $("power").textContent = running ? t.stop : t.start;
+  $("power").setAttribute("aria-pressed", String(running));
   $("power").classList.toggle("mining", running);
   $("note").textContent = [(state.snackUntil || 0) > Date.now() ? t.snackOn : "", state.satiety <= 0 ? t.hungry : "", t.threads(activeThreads(), cores())].filter(Boolean).join(" ");
 }
@@ -597,6 +657,7 @@ function render() {
   $("stream-link").textContent = t.stream;
   $("chain-link").textContent = t.chainInvite;
   $("mode").textContent = fullPower ? t.full : t.gentle;
+  $("mode").setAttribute("aria-pressed", String(fullPower));
   paintLive();
   renderMeters();
   renderSands();
@@ -616,7 +677,8 @@ const PIXEL = 5;
 let roomScratch = null;
 
 function draw(now) {
-  const canvas = $("room");
+  if (reducedMotion.matches) now = 1000;
+  const canvas = /** @type {HTMLCanvasElement} */ ($("room"));
   const bufW = WORLD_W * PIXEL;
   const bufH = WORLD_H * PIXEL;
   if (canvas.width !== bufW || canvas.height !== bufH) {
@@ -804,7 +866,7 @@ function draw(now) {
       if ((x - cx) * (x - cx) / 3 + (y - floorY) * 8 < 80) set(x, y, 0x5c3818);
     }
   }
-  if (running) angle += Math.max(0.04, Math.min(0.22, shownRate / 1600000)) * (has("oil") ? 1.35 : 1);
+  if (running && !reducedMotion.matches) angle += Math.max(0.04, Math.min(0.22, shownRate / 1600000)) * (has("oil") ? 1.35 : 1);
   ring(cx, cy, 24, 22, INK);
   ring(cx, cy, 22, 16, has("rim") ? GOLD : WOOD);
   ring(cx, cy, 17, 15, WOOD2);
@@ -885,13 +947,13 @@ function draw(now) {
     fill(hx + 5, hy - 10, 1, 3, 0xffe7b0);
     fill(hx + 7, hy - 9, 1, 2, GOLD);
   }
-  for (const [id, x, y] of [
+  for (const [id, x, y] of /** @type {[string, number, number][]} */ ([
     ["bowl", 20, 79], ["mat", 10, 80], ["ball", 48, 68], ["crate", 10, 66],
     ["lamp", 116, 26], ["frame", 58, 14], ["nest", 30, 82], ["plant", 56, 60],
     ["curtain", 14, 14], ["clock", 90, 58], ["shelf", 70, 20], ["tin", 78, 64],
     ["bell", 92, 12], ["banner", 160, 10], ["oil", 102, 64],
     ["crown", hx + 4, hy - 10], ["rim", cx, cy - 23],
-  ]) {
+  ])) {
     const level = itemLevel(id);
     if (level >= 2) set(x, y, 0xffe7b0);
     if (level >= 3) set(x + 2, y, GOLD);
@@ -933,7 +995,7 @@ function draw(now) {
   };
   pops.forEach((pop) => {
     pop.life -= 0.016;
-    const rise = Math.round((1.4 - pop.life) * 10);
+    const rise = reducedMotion.matches ? 0 : Math.round((1.4 - pop.life) * 10);
     stamp(pop.ore ? `+${pop.ore}` : "+", 24, 28 - rise);
   });
   pops = pops.filter((pop) => pop.life > 0);
@@ -950,40 +1012,69 @@ function draw(now) {
 }
 
 async function hello() {
-  const response = await fetch("/api/hello", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ minerId: state.minerId, refId: state.welcomed ? "" : state.refId }),
-  }).catch(() => null);
-  if (!response || !response.ok) return;
-  const body = await response.json();
-  state = { ...state, refId: body.refId || "", welcomed: true };
-  save();
-  render();
+  if (sayingHello) return;
+  sayingHello = true;
+  try {
+    const body = await apiJson("/api/hello", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ minerId: state.minerId, refId: state.welcomed ? "" : state.refId }),
+    });
+    if (!body || body.locked !== true || typeof body.refId !== "string"
+      || body.refId !== "" && !/^[a-z0-9]{8,32}$/i.test(body.refId)) {
+      inviteStatus = "offline";
+      boardStatus = "offline";
+      renderInvite();
+      renderBoards();
+      return;
+    }
+    inviteStatus = "ready";
+    state = { ...state, refId: body.refId || "", welcomed: true };
+    save();
+    renderInvite();
+  } finally {
+    sayingHello = false;
+  }
 }
 
 async function pulse() {
-  if (!state.welcomed) return;
-  if (unsentOre > 0) {
-    const ore = unsentOre;
-    unsentOre = 0;
-    const sent = await fetch("/api/pulse", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ minerId: state.minerId, ore }),
-    }).then((response) => response.ok).catch(() => false);
-    if (!sent) unsentOre += ore;
+  if (pulsing) return;
+  pulsing = true;
+  try {
+    if (!state.welcomed || inviteStatus !== "ready") await hello();
+    if (!state.welcomed || inviteStatus !== "ready") return;
+    let sentOk = true;
+    if (unsentOre > 0) {
+      const ore = unsentOre;
+      unsentOre = 0;
+      const sent = await apiJson("/api/pulse", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ minerId: state.minerId, ore }),
+      });
+      sentOk = sent?.ok === true;
+      if (!sentOk) unsentOre += ore;
+    }
+    const body = await apiJson(`/api/bonus?id=${state.minerId}`);
+    if (!body || !Number.isInteger(body.ore) || body.ore < 0
+      || !Number.isFinite(body.pendingMilli) || body.pendingMilli < 0) {
+      inviteStatus = "offline";
+      renderInvite();
+      return;
+    }
+    inviteStatus = sentOk ? "ready" : "offline";
+    pendingMilli = body.pendingMilli || 0;
+    if (body.ore > 0) {
+      state = { ...state, ore: state.ore + body.ore, friendOre: (state.friendOre || 0) + body.ore };
+      pops.push({ life: 1.4, ore: body.ore });
+      save();
+      renderShop();
+      paintLive();
+    }
+    renderInvite();
+  } finally {
+    pulsing = false;
   }
-  const response = await fetch(`/api/bonus?id=${state.minerId}`).catch(() => null);
-  if (!response || !response.ok) return;
-  const body = await response.json();
-  pendingMilli = body.pendingMilli || 0;
-  if (body.ore > 0) {
-    state = { ...state, ore: state.ore + body.ore, friendOre: (state.friendOre || 0) + body.ore };
-    pops.push({ life: 1.4, ore: body.ore });
-    save();
-  }
-  render();
 }
 
 function friendWindowPush(hashes) { friendWindow.push([Date.now(), hashes]); }
